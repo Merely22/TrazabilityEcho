@@ -5,7 +5,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime
 import io
-
+import plotly.express as px
+import plotly.graph_objects as go 
 #========================================================================================
 st.set_page_config(page_title="Dashboard Trazability TKI", layout="wide")
 st.title("📊 Trazability TKI - ECHO")
@@ -19,13 +20,13 @@ service = build("sheets", "v4", credentials=credentials)
 
 # ID de la hoja y nombre de la hoja
 SPREADSHEET_ID = "1AHWD_mg0X1G0uvuuPvNo0GcnndWe6toBMLs2cJ4usB4"
-SHEET_NAME = "Echo"
+SHEET_NAME = "Delta: Normal charge" # changed pending
 
 @st.cache_data(ttl=60) # actualiza cada 60 segundos
 def load_data(): 
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
-        range=f"{SHEET_NAME}!A2:AA104"
+        range=f"{SHEET_NAME}!A3:AD100" # changed pending
     ).execute()
 
     values = result.get("values", [])
@@ -59,15 +60,21 @@ df = df[df['MAC'].str.strip() != '']
 df['MAC'] = df['MAC'].astype(str).str.strip()
 
 # --- PASO 3: Convertir las columnas de fecha a formato de fecha ---
-# Usamos `errors='coerce'` para que cualquier fecha con formato incorrecto se convierta en `NaT` (Not a Time) y no rompa el script.
-df['Date_Test_Lab'] = pd.to_datetime(df['Date_Test_Lab'], format='%d/%m/%Y', errors='coerce')
-df['Date_NMEA_QC1'] = pd.to_datetime(df['Date_NMEA_QC1'], format='%d-%m-%y', errors='coerce')
-df['Date_NMEA_QC2'] = pd.to_datetime(df['Date_NMEA_QC2'], format='%d-%m-%y', errors='coerce')
-df['Date_Prod'] = pd.to_datetime(df['Date_Prod'], format='%d-%m-%y', errors='coerce')
-df['Date_Shipp'] = pd.to_datetime(df['Date_Shipp'], format='%d-%m-%y', errors='coerce')
 
-# --- PASO 4: Definir la etapa actual de cada equipo ---
-# Asignamos la etapa de forma secuencial. La última condición que se cumpla será la etapa final.
+#df['Date_Test_Lab'] = pd.to_datetime(df['Date_Test_Lab'], format='%d/%m/%Y', errors='coerce')
+#df['Date_NMEA_QC1'] = pd.to_datetime(df['Date_NMEA_QC1'], format='%d-%m-%y', errors='coerce')
+#df['Date_NMEA_QC2'] = pd.to_datetime(df['Date_NMEA_QC2'], format='%d-%m-%y', errors='coerce')
+#df['Date_Prod'] = pd.to_datetime(df['Date_Prod'], format='%d-%m-%y', errors='coerce')
+#df['Date_Shipp'] = pd.to_datetime(df['Date_Shipp'], format='%d-%m-%y', errors='coerce')
+
+df['Date_Test_Lab'] = pd.to_datetime(df['Date_Test_Lab'], errors='coerce', dayfirst=True)
+df['Date_NMEA_QC1'] = pd.to_datetime(df['Date_NMEA_QC1'], errors='coerce', dayfirst=True)
+df['Date_NMEA_QC2'] = pd.to_datetime(df['Date_NMEA_QC2'], errors='coerce', dayfirst=True)
+df['Date_Prod'] = pd.to_datetime(df['Date_Prod'], errors='coerce', dayfirst=True)
+df['Date_Shipp'] = pd.to_datetime(df['Date_Shipp'], errors='coerce', dayfirst=True)
+
+
+# --- PASO 4: Asignamos la etapa de forma secuencial. La última condición que se cumpla será la etapa final.
 df['Etapa_Actual'] = '0. Pendiente' # Valor por defecto
 df.loc[df['Date_Test_Lab'].notna(), 'Etapa_Actual'] = '1. Pruebas de Laboratorio'
 df.loc[df['Date_NMEA_QC1'].notna(), 'Etapa_Actual'] = '2. NMEA QC 01'
@@ -126,14 +133,31 @@ with col1_tiempo:
         st.success(f"**Promedio Total Proceso:** {avg_dias_total:.1f} días")
         
 with col2_tiempo:
-    st.subheader("Duración Total por Equipo (días)")
-    df_tiempos = df.dropna(subset=['Dias_Totales'])
-    if not df_tiempos.empty:
-        # Usamos BATCH y MAC para identificar unívocamente cada barra
-        df_tiempos['ID_Equipo'] = df_tiempos['BATCH'] + ' (' + df_tiempos['MAC'] + ')'
-        st.bar_chart(df_tiempos.set_index('ID_Equipo')['Dias_Totales'])
-    else:
-        st.write("Aún no hay equipos con el proceso completo para graficar.")
+    st.subheader("Cantidad de Equipos por Etapa")
+    # Crear gráfico de pastel (porcentaje de equipos por etapa)
+    etapas = [
+        '1. Pruebas de Laboratorio',
+        '2. NMEA QC 01',
+        '3. NMEA QC 02',
+        '4. Produccion Finalizada',
+        '5. Equipos Enviados'
+    ]
+    colores = ['#c6dbef', '#9ecae1', '#6baed6', '#3182bd', '#08519c']
+
+    valores = [len(df[df['Etapa_Actual'] == etapa]) for etapa in etapas]
+
+    fig = go.Figure(go.Pie(
+        labels=etapas,
+        values=valores,
+        hole=0.4,
+        marker_colors=colores,
+        #textinfo='percent+label',
+        insidetextorientation='radial',
+        pull=[0.05] * len(etapas)
+    ))
+    fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
+    st.plotly_chart(fig, use_container_width=True)
+
 
 # --- Detalle por Etapa ---
 st.header("📋 Estado de los Equipos por Etapa")
@@ -169,7 +193,7 @@ with tab4:
     st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_Prod', 'Dias_Totales']])
 
 with tab5:
-    st.subheader("Equipos en Producciòn Finalizada")
+    st.subheader("Equipos Enviados")
     df_filtrado = df[df['Etapa_Actual'] == '5. Equipos Enviados']
     st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_Prod', 'Dias_Totales']])
 
