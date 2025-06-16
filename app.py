@@ -1,17 +1,15 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go 
+import numpy as np # Importamos numpy, es muy útil para condiciones
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from streamlit_option_menu import option_menu
 from datetime import datetime
+import io
 
 #========================================================================================
-# Configuración de la página
-st.set_page_config(page_title="Dashboard Trazabilidad", layout="wide")
-st.title("Dashboard Trazabilidad Soporte")
-
+st.set_page_config(page_title="Dashboard Trazability TKI", layout="wide")
+st.title("📊 Trazability TKI - ECHO")
+#========================================================================================
 # Autenticación con Google Sheets
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 credentials = service_account.Credentials.from_service_account_info(
@@ -20,159 +18,163 @@ credentials = service_account.Credentials.from_service_account_info(
 service = build("sheets", "v4", credentials=credentials)
 
 # ID de la hoja y nombre de la hoja
-SPREADSHEET_ID = "1n1RzG32GYqTAK8Zm_Iqg3PEdt9U_YG4Nx-YwRCopMm8"
-SHEET_NAME = "data"
+SPREADSHEET_ID = "1AHWD_mg0X1G0uvuuPvNo0GcnndWe6toBMLs2cJ4usB4"
+SHEET_NAME = "Echo"
 
-@st.cache_data(ttl=60) # actualiza cada 60 segundos, reactiva pero no sobre carga el app
+@st.cache_data(ttl=60) # actualiza cada 60 segundos
 def load_data(): 
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
-        range=f"{SHEET_NAME}!B2:AD101"
+        range=f"{SHEET_NAME}!A2:AA104"
     ).execute()
 
     values = result.get("values", [])
     if not values:
         st.warning("No se encontraron datos en la hoja de cálculo.")
         return pd.DataFrame()
-
+    
     headers = values[0]
     data = values[1:]
     return pd.DataFrame(data, columns=headers)
-
+    #return pd.DataFrame(columns=values[0])
+#========================================================================================
 # Cargar datos
 df = load_data()
 
-# Preprocesamiento común
-if not df.empty:
-    df['FECHA INGRESO'] = pd.to_datetime(df['FECHA INGRESO'], format='%d/%m/%Y', errors='coerce')
-    df['FECHA ENTREGA'] = pd.to_datetime(df['FECHA ENTREGA'], format='%d/%m/%Y', errors='coerce')
-    df["AÑO"] = df["FECHA INGRESO"].dt.year
-    df['MES'] = df['FECHA INGRESO'].dt.strftime('%B')
-    order = ['January', 'February', 'March', 'April', 'May', 'June', 
-             'July', 'August', 'September', 'October', 'November', 'December']
-    df['MES'] = pd.Categorical(df['MES'], categories=order, ordered=True)
+# --- PASO 1: Renombrar las columnas para que sean más fáciles de usar ---
+df.rename(columns={
+    '#': 'ID',
+    'MAC': 'MAC',
+    'BATCH': 'BATCH',
+    'LAB TESTING DATE': 'Date_Test_Lab',
+    'Testing_Date01': 'Date_NMEA_QC1',
+    'Testing_Date02': 'Date_NMEA_QC2',
+    'Production Date': 'Date_Prod',
+    'Shippent Date': 'Date_Shipp' 
+}, inplace=True)
 
-# Sidebar
-with st.sidebar:
-    selected = option_menu(
-        menu_title="Menú principal",
-        options=["Inicio", "Consultas", "Estado del Equipo", "Reportes", "Etapas"],
-        icons=["house", "search", "bar-chart", "list-check", "clock"],
-        default_index=0
-    )
+# --- PASO 2: Eliminar filas donde la MAC es nula o vacía, ya que no representan un equipo válido.
+df.dropna(subset=['MAC'], inplace=True)
+df = df[df['MAC'].str.strip() != '']
+df['MAC'] = df['MAC'].astype(str).str.strip()
 
+# --- PASO 3: Convertir las columnas de fecha a formato de fecha ---
+# Usamos `errors='coerce'` para que cualquier fecha con formato incorrecto se convierta en `NaT` (Not a Time) y no rompa el script.
+df['Date_Test_Lab'] = pd.to_datetime(df['Date_Test_Lab'], format='%d/%m/%Y', errors='coerce')
+df['Date_NMEA_QC1'] = pd.to_datetime(df['Date_NMEA_QC1'], format='%d-%m-%y', errors='coerce')
+df['Date_NMEA_QC2'] = pd.to_datetime(df['Date_NMEA_QC2'], format='%d-%m-%y', errors='coerce')
+df['Date_Prod'] = pd.to_datetime(df['Date_Prod'], format='%d-%m-%y', errors='coerce')
+df['Date_Shipp'] = pd.to_datetime(df['Date_Shipp'], format='%d-%m-%y', errors='coerce')
+
+# --- PASO 4: Definir la etapa actual de cada equipo ---
+# Asignamos la etapa de forma secuencial. La última condición que se cumpla será la etapa final.
+df['Etapa_Actual'] = '0. Pendiente' # Valor por defecto
+df.loc[df['Date_Test_Lab'].notna(), 'Etapa_Actual'] = '1. Pruebas de Laboratorio'
+df.loc[df['Date_NMEA_QC1'].notna(), 'Etapa_Actual'] = '2. NMEA QC 01'
+df.loc[df['Date_NMEA_QC2'].notna(), 'Etapa_Actual'] = '3. NMEA QC 02'
+df.loc[df['Date_Prod'].notna(), 'Etapa_Actual'] = '4. Produccion Finalizada'
+df.loc[df['Date_Shipp'].notna(), 'Etapa_Actual'] = '5. Equipos Enviados'
+
+# --- PASO 5: Calcular la duración en días entre cada etapa ---
+df['Dias_Lab_a_NMEA1'] = (df['Date_NMEA_QC1'] - df['Date_Test_Lab']).dt.days
+df['Dias_NMEA1_a_NMEA2'] = (df['Date_NMEA_QC2'] - df['Date_NMEA_QC1']).dt.days
+df['Dias_NMEA2_a_FinProd'] = (df['Date_Prod'] - df['Date_NMEA_QC2']).dt.days
+df['Dias_Prod_Shipp'] = (df['Date_Prod'] - df['Date_Shipp']).dt.days
+df['Dias_Totales'] = (df['Date_Shipp'] - df['Date_Test_Lab']).dt.days
 #========================================================================================
-# INICIO
-if selected == "Inicio":
-    st.header("Resumen General")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Equipos", len(df))
-    with col2:
-        st.metric("Entregados", len(df[df["ENTREGADO CLIENTE"] == "SI"]))
-    with col3:
-        st.metric("Pendientes", len(df[df["ENTREGADO CLIENTE"] != "SI"]))
+# --- KPIs / Resumen General ---
+st.header("Resumen General del Proceso")
 
-    equipos_mes = df['MES'].value_counts().sort_index().reset_index()
-    equipos_mes.columns = ['MES', 'CANTIDAD']
-    fig = px.bar(equipos_mes, x='MES', y='CANTIDAD', title="Equipos ingresados por mes",
-                 labels={'CANTIDAD': 'N° de equipos'}, color_discrete_sequence=["#00AACC"])
-    st.plotly_chart(fig, use_container_width=True)
+# Contar equipos en cada etapa (considerando la última completada)
+total_equipos = len(df)
+en_etapa1 = len(df[df['Etapa_Actual'] == '1. Pruebas de Laboratorio'])
+en_etapa2 = len(df[df['Etapa_Actual'] == '2. NMEA QC 01'])
+en_etapa3 = len(df[df['Etapa_Actual'] == '3. NMEA QC 02'])
+en_etapa4 = len(df[df['Etapa_Actual'] == '4. Produccion Finalizada'])
+en_etapa5 = len(df[df['Etapa_Actual'] == '5. Equipos Enviados'])
 
-      # Mostrar outliers detectados
+col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1.metric("Total de Equipos", f"{total_equipos}")
+col2.metric("En Lab Test", f"{en_etapa1}")
+col3.metric("En NMEA QC 1", f"{en_etapa2}")
+col4.metric("En NMEA QC 2", f"{en_etapa3}")
+col5.metric("Produccion finalizada", f"{en_etapa4}")
+col6.metric("Enviados", f"{en_etapa5}")
 
-    with st.expander("Equipos pendientes"):
-        st.dataframe(df[df["ENTREGADO CLIENTE"] != "SI"])
-#========================================================================================
-# CONSULTAS
-elif selected == "Consultas":
-    st.header("Filtros de Consulta")
-    cliente = st.multiselect("Cliente:", options=df["NOMBRE / RAZÓN SOCIAL"].unique())
-    serial = st.multiselect("Número de Serie:", options=df["SERIAL"].unique())
+# --- Análisis de Tiempos ---
+st.header("⏱️ Análisis de Tiempos de Procesamiento")
+col1_tiempo, col2_tiempo = st.columns(2)
 
-    df_filtered = df.copy()
-    if cliente:
-        df_filtered = df_filtered[df_filtered["NOMBRE / RAZÓN SOCIAL"].isin(cliente)]
-    if serial:
-        df_filtered = df_filtered[df_filtered["SERIAL"].isin(serial)]
+with col1_tiempo:
+    st.subheader("Tiempos Promedio entre Etapas")
+    avg_dias_1_2 = df['Dias_Lab_a_NMEA1'].mean()
+    avg_dias_2_3 = df['Dias_NMEA1_a_NMEA2'].mean()
+    avg_dias_3_4 = df['Dias_NMEA2_a_FinProd'].mean()
+    avg_dias_4_5 = df['Dias_Prod_Shipp'].mean()
+    avg_dias_total = df['Dias_Totales'].mean()
 
-    st.dataframe(df_filtered[["NOMBRE / RAZÓN SOCIAL", "MODELO", "SERIAL", "GARANTÍA", "OBSERVACIONES CLIENTE"]])
+    # Mostramos los promedios solo si se pueden calcular (si hay datos)
+    if pd.notna(avg_dias_1_2):
+        st.info(f"**Promedio Lab → NMEA 1:** {avg_dias_1_2:.1f} días")
+    if pd.notna(avg_dias_2_3):
+        st.info(f"**Promedio NMEA 1 → NMEA 2:** {avg_dias_2_3:.1f} días")
+    if pd.notna(avg_dias_3_4):
+        st.info(f"**Promedio NMEA 2 → Produccion Final:** {avg_dias_3_4:.1f} días")
+    if pd.notna(avg_dias_4_5):
+        st.info(f"**Produccion Final → Envio:** {avg_dias_4_5:.1f} días")
+    if pd.notna(avg_dias_total):
+        st.success(f"**Promedio Total Proceso:** {avg_dias_total:.1f} días")
+        
+with col2_tiempo:
+    st.subheader("Duración Total por Equipo (días)")
+    df_tiempos = df.dropna(subset=['Dias_Totales'])
+    if not df_tiempos.empty:
+        # Usamos BATCH y MAC para identificar unívocamente cada barra
+        df_tiempos['ID_Equipo'] = df_tiempos['BATCH'] + ' (' + df_tiempos['MAC'] + ')'
+        st.bar_chart(df_tiempos.set_index('ID_Equipo')['Dias_Totales'])
+    else:
+        st.write("Aún no hay equipos con el proceso completo para graficar.")
 
-#========================================================================================
-# REPORTES
-elif selected == "Reportes":
-    st.header("Reportes")
-    año = st.selectbox("Seleccione el año:", sorted(df["AÑO"].dropna().unique(), reverse=True))
-    df_año = df[df["AÑO"] == año]
-    resumen = df_año.groupby(["MES", "ACCIONES REALIZADAS"]).size().reset_index(name="CANTIDAD")
-    fig = px.bar(resumen, x="MES", y="CANTIDAD", color="ACCIONES REALIZADAS",
-                 title=f"Equipos solucionados en {año}", barmode='relative')
-    st.plotly_chart(fig, use_container_width=True)
+# --- Detalle por Etapa ---
+st.header("📋 Estado de los Equipos por Etapa")
 
-#========================================================================================
-# ESTADO DEL EQUIPO
-elif selected == "Estado del Equipo":
-    st.header("Estado del Equipo")
-    con_diag = df[df["ACCIONES REALIZADAS"].notna() & (df["ACCIONES REALIZADAS"] != "")]
-    sin_diag = df[df["ACCIONES REALIZADAS"].isna() | (df["ACCIONES REALIZADAS"] == "")]
-    total = len(df)
+# Crear pestañas para cada etapa
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    f"Lab Test ({en_etapa1})", 
+    f"NMEA QC 01 ({en_etapa2})", 
+    f"NMEA QC 02 ({en_etapa3})",
+    f" Producciòn Final ({en_etapa4})",
+    f" Equipos Enviados ({en_etapa5})"
+])
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Con diagnóstico", f"{len(con_diag)}", f"{len(con_diag)/total*100:.1f}%")
-    with col2:
-        st.metric("Pendientes", f"{len(sin_diag)}", f"{len(sin_diag)/total*100:.1f}%")
+with tab1:
 
-    fig = go.Figure(go.Pie(
-        labels=['Con diagnóstico', 'Sin diagnóstico'],
-        values=[len(con_diag), len(sin_diag)],
-        hole=0.5,
-        marker_colors=['#4233ff', '#ff3333'],
-        textinfo='percent+value',
-        pull=[0.1, 0]
-    ))
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("Equipos en Pruebas de Laboratorio")
+    df_filtrado = df[df['Etapa_Actual'] == '1. Pruebas de Laboratorio']
+    st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_Test_Lab']])
 
-    with st.expander("Ver detalles"):
-        st.dataframe(df[["NOMBRE / RAZÓN SOCIAL", "DIAGNÓSTICO INICIAL", "ACCIONES REALIZADAS"]])
+with tab2:
+    st.subheader("Equipos en Evaluación NMEA QC 01")
+    df_filtrado = df[df['Etapa_Actual'] == '2. NMEA QC 01']
+    st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_NMEA_QC1', 'Dias_Lab_a_NMEA1']])
 
-#========================================================================================
-# ETAPAS
-elif selected == "Etapas":
-    st.header("Tiempos entre Etapas")
+with tab3:
+    st.subheader("Equipos en Evaluación NMEA QC 02")
+    df_filtrado = df[df['Etapa_Actual'] == '3. NMEA QC 02']
+    st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_NMEA_QC2', 'Dias_NMEA1_a_NMEA2']])
 
-    # Calcular el tiempo total
-    df["Tiempo Total"] = (df["FECHA ENTREGA"] - df["FECHA INGRESO"]).dt.days
+with tab4:
+    st.subheader("Equipos en Producciòn Finalizada")
+    df_filtrado = df[df['Etapa_Actual'] == '4. Produccion Finalizada']
+    st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_Prod', 'Dias_Totales']])
 
-    # Calcular el primer y tercer cuartil
-    Q1 = df["Tiempo Total"].quantile(0.25)
-    Q3 = df["Tiempo Total"].quantile(0.75)
-    IQR = Q3 - Q1
+with tab5:
+    st.subheader("Equipos en Producciòn Finalizada")
+    df_filtrado = df[df['Etapa_Actual'] == '5. Equipos Enviados']
+    st.dataframe(df_filtrado[['ID', 'MAC', 'BATCH', 'Date_Prod', 'Dias_Totales']])
 
-    lower_bound = Q1 - 2.9 * IQR
-    upper_bound = Q3 + 2.9 * IQR
+# --- Tabla de Datos Completa ---
+with st.expander("Ver tabla de datos completa y procesada"):
+    st.write("Esta tabla contiene todos los datos cargados y las columnas calculadas (etapas y duraciones).")
+    st.dataframe(df)
 
-    # Filtrar datos sin outliers
-    df_sin_outliers = df[(df["Tiempo Total"] >= lower_bound) & (df["Tiempo Total"] <= upper_bound)]
-
-    # Mostrar metricas sin outliers
-    cols = st.columns(4)
-    with cols[0]:
-        avg_time = df_sin_outliers["Tiempo Total"].mean()
-        st.metric("Promedio (sin outliers)", f"{round(avg_time,1)} días" if not pd.isna(avg_time) else "N/A")
-    with cols[1]:
-        st.metric("Mínimo", f"{df_sin_outliers['Tiempo Total'].min()} días")
-    with cols[2]:
-        st.metric("Máximo", f"{df_sin_outliers['Tiempo Total'].max()} días")
-    with cols[3]:
-        st.metric("Mediana", f"{df_sin_outliers['Tiempo Total'].median()} días")
-
-    # Mostrar tabla general 
-    st.subheader("Detalle por Equipo ")
-    st.dataframe(df_sin_outliers[["NOMBRE / RAZÓN SOCIAL", "FECHA INGRESO", "FECHA ENTREGA", "Tiempo Total"]])
-
-    # Mostrar outliers detectados
-    outliers = df[(df["Tiempo Total"] < lower_bound) | (df["Tiempo Total"] > upper_bound)]
-    if not outliers.empty:
-        with st.expander("Identificar tiempos atípicos detectados"):
-            st.dataframe(outliers[["NOMBRE / RAZÓN SOCIAL", "FECHA INGRESO", "FECHA ENTREGA", "Tiempo Total"]])
