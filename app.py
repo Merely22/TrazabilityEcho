@@ -20,13 +20,13 @@ service = build("sheets", "v4", credentials=credentials)
 
 # ID de la hoja y nombre de la hoja
 SPREADSHEET_ID = "1AHWD_mg0X1G0uvuuPvNo0GcnndWe6toBMLs2cJ4usB4"
-SHEET_NAME = "Delta: Normal charge" # changed pending
+SHEET_NAME = "Echo" # changed pending
 
 @st.cache_data(ttl=60) # actualiza cada 60 segundos
 def load_data(): 
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
-        range=f"{SHEET_NAME}!A3:AD100" # changed pending
+        range=f"{SHEET_NAME}!A2:AD100" # changed pending
     ).execute()
 
     values = result.get("values", [])
@@ -36,8 +36,11 @@ def load_data():
     
     headers = values[0]
     data = values[1:]
-    return pd.DataFrame(data, columns=headers)
-    #return pd.DataFrame(columns=values[0])
+    #return pd.DataFrame(data, columns=headers)
+    # Rellenar filas cortas con valores vacíos para que coincidan con headers
+    fixed_data = [row + [""] * (len(headers) - len(row)) for row in data]
+
+    return pd.DataFrame(fixed_data, columns=headers)
 #========================================================================================
 # Cargar datos
 df = load_data()
