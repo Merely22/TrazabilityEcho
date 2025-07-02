@@ -116,12 +116,12 @@ en_etapa5 = len(df[df['Etapa_Actual'] == 'Equipos Enviados'])
 
 st.header ('Resumen de Equipos por Etapa')
 col1, col2, col3, col4, col5, col6 = st.columns(6)
-col1.metric("Total de Equipos", f"{total_equipos}")
-col2.metric("En Lab Test", f"{en_etapa1}")
-col3.metric("En NMEA QC 1", f"{en_etapa2}")
-col4.metric("En NMEA QC 2", f"{en_etapa3}")
-col5.metric("Produccion finalizada", f"{en_etapa4}")
-col6.metric("Enviados", f"{en_etapa5}")
+col1.metric("Total de Equipos", f"{total_equipos}",f"{total_equipos*100/total_equipos:.1f}%")
+col2.metric("En Lab Test", f"{en_etapa1}", f"{(en_etapa1*100)/total_equipos:.1f}%")
+col3.metric("En NMEA QC 1", f"{en_etapa2}", f"{(en_etapa2*100)/total_equipos:.1f}%")
+col4.metric("En NMEA QC 2", f"{en_etapa3}", f"{(en_etapa3*100)/total_equipos:.1f}%")
+col5.metric("Produccion finalizada", f"{en_etapa4}", f"{(en_etapa4*100)/total_equipos:.1f}%")
+col6.metric("Enviados", f"{en_etapa5}", f"{(en_etapa5*100)/total_equipos:.1f}%")
 
 st.divider()
 
@@ -130,6 +130,7 @@ col_obs1, col_obs2 = st.columns(2)
 with col_obs1:
     st.subheader ('Equipos en estado de Observación')
     count_obs = df_obs['Estado_Observacion'].value_counts().reset_index()     # observation counts
+    st.write("Total de equipos observados:", len(df_obs))
     count_obs.columns = ['Tipo de Problema', 'Cantidad']
     fig_obs = px.bar(
         count_obs,
